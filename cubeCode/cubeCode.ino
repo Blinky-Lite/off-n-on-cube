@@ -1,174 +1,125 @@
-#define BAUD_RATE 115200
+#include "ModbusRtu.h"
+#define BAUD_RATE  19200
+#define MODBUSBUFSIZE  7
+#define powerOnLedPin 4
+#define powerOnPin    21
+#define currentMonPin A0
+#define commLEDPin    13
 
-struct TransmitData
+/**
+ *  Modbus object declaration
+ *  u8id : node id = 0 for master, = 1..247 for slave
+ *  port : serial port
+ *  u8txenpin : 0 for RS-232 and USB-FTDI 
+ *               or any pin number > 1 for RS-485
+ */
+Modbus slave(1,Serial1,0); // this is slave @1 and RS-232 or USB-FTDI
+
+union ModbusUnion
 {
-  float avgRms;
-  float milliAmps = 0.0;
-  float power = 0.0;
-  float adcSampleRate = 0;
-};
-struct ReceiveData
-{
-  int powerOn = 0;
-  float nsamples = 5000.0;
-  float avgRmsOffset = 0.015;
-  float adcTomA = 55.8;
-  int loopDelay = 1000;
-  float nfilter = 30.0;
-};
-const int powerOnPin = 21;
-const int powerOnLedPin = 4;
-const int currentMonPin = A0;
-const float acVolts = 240.0;
+  struct
+  {
+    uint16_t initCube;
+    uint16_t avgAdc;
+    uint16_t rmsAdc;
+    uint16_t sampleRate;
+    uint16_t nsamples;
+    uint16_t nfilter;
+    uint16_t powerOn;
+  };
+  uint16_t modbusBuffer[MODBUSBUFSIZE];
+} mb;
+boolean commLED = false;
+uint16_t msgCnt = 0;
+
 float avgAdc = 0.0;
-float nsamples = 5000.0;
-float nfilter = 30.0;
 float nsamplesCnt = 1.0;
+float avgRms = 0.0;
+float adcValue;
+float rmsAdc;
 float filteredAdc = 0.0;
 float nfilterCnt = 1.0;
-int oldPowerOn = 0.0;
-
-void setupPins()
-{
-  pinMode(powerOnPin, OUTPUT);
-  pinMode(powerOnLedPin, OUTPUT);
-  pinMode(currentMonPin, INPUT);
-  digitalWrite(powerOnPin, 0);
-}
-void processNewSetting(TransmitData* tData, ReceiveData* rData, ReceiveData* newData)
-{
-  rData->powerOn = newData->powerOn;
-  rData->loopDelay = newData->loopDelay;
-  rData->nsamples = newData->nsamples;
-  rData->nfilter = newData->nfilter;
-  rData->avgRmsOffset = newData->avgRmsOffset;
-  rData->adcTomA = newData->adcTomA;
-  if ((nsamples != rData->nsamples) || (nfilter != rData->nfilter))
-  {
-    nsamples = rData->nsamples;
-    nfilter = rData->nfilter;
-    avgAdc = 512.0;
-    filteredAdc = 512.0;
-    tData->avgRms = 0.0;
-    nsamplesCnt = 1.0;
-    nfilterCnt = 1.0;
-  }
-}
-boolean processData(TransmitData* tData, ReceiveData* rData)
-{
-  float adcValue;
-  float rmsAdc;
-  int icnt = 0;
-  unsigned long tstart;
-  unsigned long tnow;
-
-  digitalWrite(powerOnPin, rData->powerOn);
-  digitalWrite(powerOnLedPin, rData->powerOn);
-  if (oldPowerOn != rData->powerOn)
-  {
-    avgAdc = 512.0;
-    filteredAdc = 512.0;
-    tData->avgRms = 0.0;
-    nsamplesCnt = 1.0;
-    nfilterCnt = 1.0;
-  }
-  oldPowerOn = rData->powerOn;
-
-  tstart = millis();
-  tnow = tstart;
-
-  while(((int) (tnow - tstart)) < rData->loopDelay)
-  { 
-    adcValue = (float) analogRead(currentMonPin);
-    filteredAdc = filteredAdc + (adcValue - filteredAdc) / nfilterCnt;
-    avgAdc = avgAdc + (adcValue - avgAdc) / nsamplesCnt;
-    rmsAdc = (filteredAdc - avgAdc);
-    rmsAdc = rmsAdc * rmsAdc;
-    tData->avgRms = tData->avgRms + (rmsAdc - tData->avgRms) / nsamplesCnt;
-     ++icnt;
-    if (nfilterCnt < nfilter) nfilterCnt = nfilterCnt + 1.0;
-    if (nsamplesCnt < nsamples) nsamplesCnt = nsamplesCnt + 1.0;
-    tnow = millis();
-  }
-  tData->milliAmps = tData->avgRms - rData->avgRmsOffset;
-  if (tData->milliAmps < 0.0) tData->milliAmps = 0.0;
-  tData->milliAmps = sqrt(tData->milliAmps) * rData->adcTomA;
-  tData->power = tData->milliAmps * 0.001 * acVolts;
-  tData->adcSampleRate = ((float) icnt) / ((float) rData->loopDelay);
-  if (rData->powerOn == 0)
-  {
-    tData->milliAmps = 0.0;
-    tData->power = 0.0;
-  }
-
-  return true;
-}
-
-const int microLEDPin = 13;
-const int commLEDPin = 5;
-boolean commLED = true;
-
-struct TXinfo
-{
-  int cubeInit = 1;
-  int newSettingDone = 0;
-};
-struct RXinfo
-{
-  int newSetting = 0;
-};
-
-struct TX
-{
-  TXinfo txInfo;
-  TransmitData txData;
-};
-struct RX
-{
-  RXinfo rxInfo;
-  ReceiveData rxData;
-};
-TX tx;
-RX rx;
-ReceiveData settingsStorage;
-
-int sizeOfTx = 0;
-int sizeOfRx = 0;
+unsigned long tstart;
+unsigned long tnow;
+uint16_t sampleCount = 0;;
 
 void setup()
 {
-  setupPins();
-  pinMode(microLEDPin, OUTPUT);    
-  pinMode(commLEDPin, OUTPUT);  
-  digitalWrite(commLEDPin, commLED);
-  digitalWrite(microLEDPin, commLED);
+  pinMode(powerOnLedPin, OUTPUT);
+  pinMode(powerOnPin,    OUTPUT);
+  pinMode(commLEDPin,    OUTPUT);
+  pinMode(currentMonPin, INPUT);
+ 
+  digitalWrite(powerOnLedPin, LOW);    
+  digitalWrite(powerOnPin,    LOW);    
+  digitalWrite(commLEDPin,    LOW);    
 
-  sizeOfTx = sizeof(tx);
-  sizeOfRx = sizeof(rx);
+  mb.initCube               = 1;
+  mb.avgAdc                 = 0;
+  mb.rmsAdc                 = 0;
+  mb.nsamples               = 5000;
+  mb.nfilter                = 5;
+  mb.sampleRate             = 0;
+  mb.powerOn                = 0;
+
+//  Serial.begin(9600);
   Serial1.begin(BAUD_RATE);
+  slave.start();
   delay(1000);
+//  for (int ii = 0; ii < 10; ++ii) Serial.println(mb.modbusBuffer[ii]);  
+  tstart = micros();
+  tnow = tstart;
+   
 }
+
 void loop()
 {
-  boolean goodData = false;
-  goodData = processData(&(tx.txData), &settingsStorage);
-  if (goodData)
+  float frms = 0.0;
+  slave.poll( mb.modbusBuffer, MODBUSBUFSIZE );
+  checkComm();
+
+  adcValue = (float) analogRead(currentMonPin);
+  filteredAdc = filteredAdc + (adcValue - filteredAdc) / nfilterCnt;
+  avgAdc = avgAdc + (adcValue - avgAdc) / nsamplesCnt;
+  rmsAdc = (filteredAdc - avgAdc);
+  rmsAdc = rmsAdc * rmsAdc;
+  avgRms = avgRms + (rmsAdc - avgRms) / nsamplesCnt;
+  if (nsamplesCnt < ((float) mb.nsamples)) nsamplesCnt = nsamplesCnt + 1.0;
+  if (nfilterCnt  < ((float) mb.nfilter)) nfilterCnt = nfilterCnt + 1.0;
+ 
+  frms = 32.0 * sqrt(avgRms);
+  mb.avgAdc = (uint16_t) (32.0 * avgAdc);
+  mb.rmsAdc = (uint16_t) frms;
+
+  if (mb.powerOn == 0)
   {
-    tx.txInfo.newSettingDone = 0;
-    if(Serial1.available() > 0)
-    { 
-      commLED = !commLED;
-      digitalWrite(commLEDPin, commLED);
-      Serial1.readBytes((uint8_t*)&rx, sizeOfRx);
-      
-      if (rx.rxInfo.newSetting > 0)
-      {
-        processNewSetting(&(tx.txData), &settingsStorage, &(rx.rxData));
-        tx.txInfo.newSettingDone = 1;
-        tx.txInfo.cubeInit = 0;
-      }
-    }
-    Serial1.write((uint8_t*)&tx, sizeOfTx);
+    digitalWrite(powerOnLedPin, LOW);    
+    digitalWrite(powerOnPin,    LOW);    
+  }
+  else
+  {
+    digitalWrite(powerOnLedPin, HIGH);    
+    digitalWrite(powerOnPin,    HIGH);    
+  }
+  sampleCount = sampleCount + 1;
+  tnow = micros();
+  if ((tnow - tstart) > 1000000)
+  {
+    mb.sampleRate = sampleCount;
+    sampleCount = 0;
+    tstart = tnow;
+  }
+
+}
+void checkComm()
+{
+  uint16_t numMessages;
+  numMessages = slave.getInCnt();
+  if (numMessages != msgCnt)
+  {
+    msgCnt = numMessages;
+    commLED = !commLED;
+    digitalWrite(commLEDPin, commLED);    
   }
   
 }
