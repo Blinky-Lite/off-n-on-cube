@@ -4,7 +4,7 @@
 #define powerOnLedPin 4
 #define powerOnPin    21
 #define currentMonPin A0
-#define commLEDPin    13
+#define commLEDPin    5
 
 /**
  *  Modbus object declaration
@@ -29,7 +29,7 @@ union ModbusUnion
   };
   uint16_t modbusBuffer[MODBUSBUFSIZE];
 } mb;
-boolean commLED = false;
+boolean commLED = true;
 uint16_t msgCnt = 0;
 
 float avgAdc = 0.0;
@@ -52,12 +52,12 @@ void setup()
  
   digitalWrite(powerOnLedPin, LOW);    
   digitalWrite(powerOnPin,    LOW);    
-  digitalWrite(commLEDPin,    LOW);    
+  digitalWrite(commLEDPin,    commLED);    
 
   mb.initCube               = 1;
   mb.avgAdc                 = 0;
   mb.rmsAdc                 = 0;
-  mb.nsamples               = 5000;
+  mb.nsamples               = 2000;
   mb.nfilter                = 5;
   mb.sampleRate             = 0;
   mb.powerOn                = 0;
@@ -75,8 +75,30 @@ void setup()
 void loop()
 {
   float frms = 0.0;
+  uint16_t oldPowerOn;
+
+  oldPowerOn = mb.powerOn;
   slave.poll( mb.modbusBuffer, MODBUSBUFSIZE );
   checkComm();
+  if (oldPowerOn != mb.powerOn)
+  {
+    if (mb.powerOn == 0)
+    {
+      digitalWrite(powerOnLedPin, LOW);    
+      digitalWrite(powerOnPin,    LOW);    
+    }
+    else
+    {
+      digitalWrite(powerOnLedPin, HIGH);    
+      digitalWrite(powerOnPin,    HIGH);    
+    }
+    nsamplesCnt = 1.0;
+    nfilterCnt  = 1.0;
+    delay(500);
+  }
+
+  if (nsamplesCnt > ((float) mb.nsamples) ) nsamplesCnt = 1;
+  if (nfilterCnt  > ((float) mb.nfilter) )  nfilterCnt = 1;
 
   adcValue = (float) analogRead(currentMonPin);
   filteredAdc = filteredAdc + (adcValue - filteredAdc) / nfilterCnt;
@@ -91,16 +113,6 @@ void loop()
   mb.avgAdc = (uint16_t) (32.0 * avgAdc);
   mb.rmsAdc = (uint16_t) frms;
 
-  if (mb.powerOn == 0)
-  {
-    digitalWrite(powerOnLedPin, LOW);    
-    digitalWrite(powerOnPin,    LOW);    
-  }
-  else
-  {
-    digitalWrite(powerOnLedPin, HIGH);    
-    digitalWrite(powerOnPin,    HIGH);    
-  }
   sampleCount = sampleCount + 1;
   tnow = micros();
   if ((tnow - tstart) > 1000000)
