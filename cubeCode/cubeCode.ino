@@ -1,5 +1,5 @@
 #include "ModbusRtu.h"
-#define BAUD_RATE  19200
+#define BAUD_RATE  9600
 #define MODBUSBUFSIZE  7
 #define powerOnLedPin 4
 #define powerOnPin    21
