@@ -1,36 +1,28 @@
-#include "ModbusRtu.h"
-#define BAUD_RATE  9600
-#define MODBUSBUFSIZE  7
+#include "BlinkyBus.h"
+#define BAUD_RATE  19200
+#define commLEDPin    5
+
 #define powerOnLedPin 4
 #define powerOnPin    21
 #define currentMonPin A0
-#define commLEDPin    5
 
-/**
- *  Modbus object declaration
- *  u8id : node id = 0 for master, = 1..247 for slave
- *  port : serial port
- *  u8txenpin : 0 for RS-232 and USB-FTDI 
- *               or any pin number > 1 for RS-485
- */
-Modbus slave(1,Serial1,0); // this is slave @1 and RS-232 or USB-FTDI
-
-union ModbusUnion
+#define BLINKYBUSBUFSIZE  7
+union BlinkyBusUnion
 {
   struct
   {
-    uint16_t initCube;
-    uint16_t avgAdc;
-    uint16_t rmsAdc;
-    uint16_t sampleRate;
-    uint16_t nsamples;
-    uint16_t nfilter;
-    uint16_t powerOn;
+    int16_t state;
+    int16_t avgAdc;
+    int16_t rmsAdc;
+    int16_t sampleRate;
+    int16_t nsamples;
+    int16_t nfilter;
+    int16_t powerOn;
   };
-  uint16_t modbusBuffer[MODBUSBUFSIZE];
-} mb;
-boolean commLED = true;
-uint16_t msgCnt = 0;
+  int16_t buffer[BLINKYBUSBUFSIZE];
+} bb;
+BlinkyBus blinkyBus(bb.buffer, BLINKYBUSBUFSIZE, Serial1, commLEDPin);
+
 
 float avgAdc = 0.0;
 float nsamplesCnt = 1.0;
@@ -41,7 +33,7 @@ float filteredAdc = 0.0;
 float nfilterCnt = 1.0;
 unsigned long tstart;
 unsigned long tnow;
-uint16_t sampleCount = 0;;
+int16_t sampleCount = 0;;
 
 void setup()
 {
@@ -52,37 +44,31 @@ void setup()
  
   digitalWrite(powerOnLedPin, LOW);    
   digitalWrite(powerOnPin,    LOW);    
-  digitalWrite(commLEDPin,    commLED);    
 
-  mb.initCube               = 1;
-  mb.avgAdc                 = 0;
-  mb.rmsAdc                 = 0;
-  mb.nsamples               = 2000;
-  mb.nfilter                = 5;
-  mb.sampleRate             = 0;
-  mb.powerOn                = 0;
+  bb.state                  = 1;
+  bb.avgAdc                 = 0;
+  bb.rmsAdc                 = 0;
+  bb.nsamples               = 2000;
+  bb.nfilter                = 5;
+  bb.sampleRate             = 0;
+  bb.powerOn                = 0;
 
-//  Serial.begin(9600);
   Serial1.begin(BAUD_RATE);
-  slave.start();
-  delay(1000);
-//  for (int ii = 0; ii < 10; ++ii) Serial.println(mb.modbusBuffer[ii]);  
+  blinkyBus.start();
   tstart = micros();
   tnow = tstart;
-   
 }
 
 void loop()
 {
   float frms = 0.0;
-  uint16_t oldPowerOn;
+  int16_t oldPowerOn;
 
-  oldPowerOn = mb.powerOn;
-  slave.poll( mb.modbusBuffer, MODBUSBUFSIZE );
-  checkComm();
-  if (oldPowerOn != mb.powerOn)
+  oldPowerOn = bb.powerOn;
+  blinkyBus.poll();
+  if (oldPowerOn != bb.powerOn)
   {
-    if (mb.powerOn == 0)
+    if (bb.powerOn == 0)
     {
       digitalWrite(powerOnLedPin, LOW);    
       digitalWrite(powerOnPin,    LOW);    
@@ -97,8 +83,8 @@ void loop()
     delay(500);
   }
 
-  if (nsamplesCnt > ((float) mb.nsamples) ) nsamplesCnt = 1;
-  if (nfilterCnt  > ((float) mb.nfilter) )  nfilterCnt = 1;
+  if (nsamplesCnt > ((float) bb.nsamples) ) nsamplesCnt = 1;
+  if (nfilterCnt  > ((float) bb.nfilter) )  nfilterCnt = 1;
 
   adcValue = (float) analogRead(currentMonPin);
   filteredAdc = filteredAdc + (adcValue - filteredAdc) / nfilterCnt;
@@ -106,32 +92,20 @@ void loop()
   rmsAdc = (filteredAdc - avgAdc);
   rmsAdc = rmsAdc * rmsAdc;
   avgRms = avgRms + (rmsAdc - avgRms) / nsamplesCnt;
-  if (nsamplesCnt < ((float) mb.nsamples)) nsamplesCnt = nsamplesCnt + 1.0;
-  if (nfilterCnt  < ((float) mb.nfilter)) nfilterCnt = nfilterCnt + 1.0;
+  if (nsamplesCnt < ((float) bb.nsamples)) nsamplesCnt = nsamplesCnt + 1.0;
+  if (nfilterCnt  < ((float) bb.nfilter)) nfilterCnt = nfilterCnt + 1.0;
  
   frms = 32.0 * sqrt(avgRms);
-  mb.avgAdc = (uint16_t) (32.0 * avgAdc);
-  mb.rmsAdc = (uint16_t) frms;
+  bb.avgAdc = (int16_t) (32.0 * avgAdc);
+  bb.rmsAdc = (int16_t) frms;
 
   sampleCount = sampleCount + 1;
   tnow = micros();
   if ((tnow - tstart) > 1000000)
   {
-    mb.sampleRate = sampleCount;
+    bb.sampleRate = sampleCount;
     sampleCount = 0;
     tstart = tnow;
   }
 
-}
-void checkComm()
-{
-  uint16_t numMessages;
-  numMessages = slave.getInCnt();
-  if (numMessages != msgCnt)
-  {
-    msgCnt = numMessages;
-    commLED = !commLED;
-    digitalWrite(commLEDPin, commLED);    
-  }
-  
 }
